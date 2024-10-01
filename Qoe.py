@@ -158,7 +158,7 @@ def find_first_data_packet(packets, server_ip):
     for packet in packets:
         if IP in packet and TCP in packet and packet[IP].src == server_ip:
             return packet.time
-    return 1
+    return None
 
 def calculate_initial_buffer_time(packets, server_ip):
     # 计算初始缓冲时间
