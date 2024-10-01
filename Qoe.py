@@ -156,7 +156,7 @@ def is_tcp_syn(packet):
 def find_first_data_packet(packets, server_ip):
     # 找到服务器发送的第一个数据包的时间
     for packet in packets:
-        if IP in packet and TCP in packt and packet[IP].src == server_ip:
+        if IP in packet and TCP in packet and packet[IP].src == server_ip:
             return packet.time
     return None
 
