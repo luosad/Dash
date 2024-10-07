@@ -1,52 +1,57 @@
-from scapy.all import *
 import time
-from collections import defaultdict
+from scapy.layers.inet import IP, TCP
+from scapy.all import rdpcap
+from scapy.layers.l2 import Ether
+from multiprocessing import Value
 
-# 用于存储每个连接的 SYN 包时间
-connections = defaultdict(float)
 
-def calculate_rtt(syn_time, ack_time):
-    "计算往返时间 (RTT)"
-    return (ack_time - syn_time) * 1000  # 转换为毫秒
+def analyze_packets(pcap_file, congestion_status, threshold=100):
+    """
+    分析 pcap 文件中的数据包并计算时延，更新共享内存中的拥塞状态。
 
-def check_congestion(rtt, threshold=100):
-    "检测拥塞，若 RTT 超过阈值则认为存在拥塞"
-    if rtt > threshold:
-        return True
-    return False
+    :param pcap_file: 要分析的 pcap 文件路径
+    :param congestion_status: 共享内存变量，用于表示拥塞状态（1 表示拥塞，0 表示无拥塞）
+    :param threshold: 拥塞检测的时延阈值，超过此值认为存在拥塞（单位：毫秒）
+    """
+    # 从 pcap 文件加载数据包
+    packets = rdpcap(pcap_file)
 
-def process_packet(packet):
-    "处理捕获的数据包"
-    if packet.haslayer(IP) and packet.haslayer(TCP):
-        src_ip = packet[IP].src
-        dst_ip = packet[IP].dst
-        port = packet[TCP].dport
+    # 初始化字典来存储每个数据包的时间戳
+    timestamps = {}
 
-        # 只处理指定端口的流量
-        if port == 80:
-            # TCP SYN 包，标志开始时间
-            if packet[TCP].flags == 'S':
-                connections[packet[TCP].seq] = time.time()
-            
-            # TCP ACK 包，计算往返时间
-            elif packet[TCP].flags == 'A':
-                if packet[TCP].ack in connections:
-                    rtt = calculate_rtt(connections[packet[TCP].ack], time.time())
-                    congested = check_congestion(rtt)
-                    congestion_status = "Congested" if congested else "Normal"
-                    print(f"RTT for {src_ip} to {dst_ip}: {rtt:.2f} ms - Status: {congestion_status}")
-                    
-                    # 移除已处理的连接
-                    del connections[packet[TCP].ack]
+    # 提取每个数据包的时间戳
+    for packet in packets:
+        if packet.haslayer(Ether) and packet.haslayer(IP):
+            ip_src = packet[IP].src
+            ip_dst = packet[IP].dst
+            if (ip_src, ip_dst) not in timestamps:
+                timestamps[(ip_src, ip_dst)] = []
+            timestamps[(ip_src, ip_dst)].append(packet.time)
 
-def monitor_port_latency(interface, port):
-    """监控指定接口和端口的流量"""
-    # 开始 sniff 数据包，指定过滤器
-    sniff(iface=interface, filter=f'tcp port {port}', prn=process_packet)
+    # 计算每对源-目的IP地址之间的时延
+    for key, value in timestamps.items():
+        ip_src, ip_dst = key
+        for i in range(1, len(value)):
+            delay = (value[i] - value[i - 1]) * 1000  # 转换为毫秒
+            print(f"Delay from {ip_src} to {ip_dst}: {delay:.2f} ms")
+
+            # 根据延迟更新拥塞状态
+            if delay > threshold:
+                congestion_status.value = 1  # 表示检测到拥塞
+                print(f"Network congestion detected for {ip_src} -> {ip_dst}")
+            else:
+                congestion_status.value = 0  # 无拥塞
+
 
 if __name__ == '__main__':
-    # 设置要监控的网络接口和端口
-    interface = 'eth0'  # 主机的网络接口
-    port = 80           # 监控端口
-    print(f"开始监控接口 {interface} 上的端口 {port} 的延迟...")
-    monitor_port_latency(interface, port)
+    # 创建一个共享的整数变量，初始值为0（无拥塞）
+    congestion_status = Value('i', 0)
+
+    # 运行数据包分析，并将共享内存变量传递给函数
+    analyze_packets('test.pcap', congestion_status)
+
+    # 根据共享内存的状态输出结果
+    if congestion_status.value == 1:
+        print("Network is currently congested!")
+    else:
+        print("No congestion detected.")
