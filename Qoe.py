@@ -118,30 +118,12 @@
 # # 调用函数  
 # print(QOE('D:/VSCode_Project/SRTP/test01.pcap', "192.168.5.130", "192.168.5.1")) 
 
+#qoe_score = QOE(pcap_file, server_ip)
+#print(f"QoE Score: {qoe_score}")
 
-# # # stall_start_time = None  # 卡顿开始时间  
-# #     stall_duration = 0  
-# #     bitrate_threshold = 500  # 设定卡顿比特率的阈值（秒）
-# #     stall_time = 0  # 累计卡顿时间  
-# #     is_stalling = False  # 当前是否处于卡顿状态  
-# #     # 判断卡顿并计算卡顿时间  
-# #     for i in range(len(bitrates)):  
-# #         if  bitrates[i] < bitrate_threshold :  
-# #             if not is_stalling:  
-# #                 is_stalling = True  
-# #                 stall_start_time = timestamps[i]   
-# #         else:  
-# #             if is_stalling:  
-# #                 is_stalling = False  
-# #                 stall_end_time = timestamps[i-1]  
-# #                 stall_duration = (stall_end_time - stall_start_time)
-# #                 stall_time+=(stall_end_time - stall_start_time)
-# #                 # if stall_duration>0:
-# #                 #     print(f"Stutter detected from {stall_start_time} to {stall_end_time}, duration: {stall_duration:.6f} seconds")  
-# #                 stall_duration = 0  # 重置卡顿时间  
-
-
-from scapy.all import rdpcap, TCP, IP
+from flask import Flask, request, jsonify
+from scapy.all import *
+from scapy.layers.inet import IP,TCP
 
 # 权重系数
 UDB = 1.2  # 比特率之差的系数
@@ -149,19 +131,18 @@ UI = 4.3   # 初始缓冲系数
 UD = 4.4   # 卡顿时间系数
 UQ = 1.0   # 视频质量切换频率系数
 
+app = Flask(__name__)
+
 def is_tcp_syn(packet):
-    # 判断TCP包是否是SYN包
     return TCP in packet and packet[TCP].flags & 0x02
 
 def find_first_data_packet(packets, server_ip):
-    # 找到服务器发送的第一个数据包的时间
     for packet in packets:
         if IP in packet and TCP in packet and packet[IP].src == server_ip:
             return packet.time
     return None
 
 def calculate_initial_buffer_time(packets, server_ip):
-    # 计算初始缓冲时间
     first_syn_time = None
     for packet in packets:
         if is_tcp_syn(packet):
@@ -178,11 +159,9 @@ def calculate_initial_buffer_time(packets, server_ip):
     return float(first_data_time - first_syn_time)
 
 def calculate_bitrate(packet_size, delta_time):
-    # 计算比特率（比特/秒）      
     return float(packet_size * 8) / float(delta_time) if delta_time > 0 else 0
 
 def calculate_stall_duration(packets, bitrates, bitrate_threshold=500000):
-    # 计算卡顿时间
     stall_duration = 0
     is_stalling = False
     stall_start_time = 0
@@ -197,11 +176,10 @@ def calculate_stall_duration(packets, bitrates, bitrate_threshold=500000):
                 is_stalling = False
                 stall_end_time = packets[i].time
                 stall_duration += float(stall_end_time - stall_start_time)
-    
+
     return stall_duration
 
 def calculate_quality_switches(packets):
-    # 计算视频质量切换的次数
     quality_switches = 0
     last_quality = None
 
@@ -213,27 +191,23 @@ def calculate_quality_switches(packets):
                 if last_quality and current_quality != last_quality:
                     quality_switches += 1
                 last_quality = current_quality
-    
+
     return quality_switches
 
 def QOE(pcap_file, server_ip):
-    # 综合QoE计算
     packets = rdpcap(pcap_file)
     timestamps = [float(packet.time) for packet in packets if IP in packet and TCP in packet]
     packet_sizes = [float(len(packet)) for packet in packets if IP in packet and TCP in packet]
-    
-    # 计算比特率
-    bitrates = [calculate_bitrate(packet_sizes[i], timestamps[i] - timestamps[i - 1]) 
+
+    bitrates = [calculate_bitrate(packet_sizes[i], timestamps[i] - timestamps[i - 1])
                 for i in range(1, len(timestamps))]
-    
+
     bitrate_differences = [abs(bitrates[i] - bitrates[i - 1]) for i in range(1, len(bitrates))]
-    
-    # 计算各QoE指标
+
     initial_buffer_time = calculate_initial_buffer_time(packets, server_ip)
     stall_time = calculate_stall_duration(packets, bitrates)
     quality_switches = calculate_quality_switches(packets)
 
-    # 综合QoE得分
     qoe_score = (
         sum(bitrates) / 1e9 +
         UDB * sum(bitrate_differences) / 1e9 +
@@ -241,12 +215,24 @@ def QOE(pcap_file, server_ip):
         UD * stall_time +
         UQ * quality_switches
     )
-    
+
     return qoe_score
 
-# 使用示例
-pcap_file = 'D:/VSCode_Project/SRTP/test01.pcap'  # 替换为您的pcap文件路径
-server_ip = '192.168.5.130'  # 替换为视频服务器的IP地址
+@app.route('/qoe', methods=['POST'])
+def get_qoe():
+    try:
+        data = request.get_json()
+        app.logger.info(f"Received data: {data}")
+        pcap_file = data.get('pcap_file')
+        server_ip = data.get('server_ip')
+        if not pcap_file or not server_ip:
+            return jsonify({"error": "Missing pcap_file or server_ip"}), 400
 
-qoe_score = QOE(pcap_file, server_ip)
-print(f"QoE Score: {qoe_score}")
+        qoe_score = QOE(pcap_file, server_ip)
+        return jsonify({"qoe_score": qoe_score}), 200
+    except Exception as e:
+        app.logger.error(f"Error processing request: {e}")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(port=5000)
