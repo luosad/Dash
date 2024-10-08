@@ -1,0 +1,56 @@
+def QOE(pcap_file, server_ip):
+    packets = rdpcap(pcap_file)
+    timestamps = [float(packet.time) for packet in packets if IP in packet and TCP in packet]
+    packet_sizes = [float(len(packet)) for packet in packets if IP in packet and TCP in packet]
+
+    # 确保有足够的时间戳和包大小
+    if len(timestamps) < 2 or len(packet_sizes) < 2:
+        raise ValueError("时间戳或包大小列表长度不足，无法计算比特率")
+
+    # 计算比特率
+    bitrates = [calculate_bitrate(packet_sizes[i], timestamps[i] - timestamps[i - 1])
+                for i in range(1, len(timestamps))]
+
+    # 确保比特率列表不为空
+    if len(bitrates) < 1:
+        raise ValueError("比特率列表为空，无法计算卡顿时间")
+
+    bitrate_differences = [abs(bitrates[i] - bitrates[i - 1]) for i in range(1, len(bitrates))]
+
+    initial_buffer_time = calculate_initial_buffer_time(packets, server_ip)
+    stall_time = calculate_stall_duration(packets, bitrates)
+    quality_switches = calculate_quality_switches(packets)
+
+    qoe_score = (
+        sum(bitrates) / 1e9 +
+        UDB * sum(bitrate_differences) / 1e9 +
+        UI * initial_buffer_time +
+        UD * stall_time +
+        UQ * quality_switches
+    )
+
+    return qoe_score
+
+
+
+
+def calculate_stall_duration(packets, bitrates, bitrate_threshold=500000):
+    if len(bitrates) == 0:
+        return 0  # 没有比特率时返回0
+
+    stall_duration = 0
+    is_stalling = False
+    stall_start_time = 0
+
+    for i in range(len(bitrates)):
+        if bitrates[i] < bitrate_threshold:
+            if not is_stalling:
+                is_stalling = True
+                stall_start_time = packets[i].time
+        else:
+            if is_stalling:
+                is_stalling = False
+                stall_end_time = packets[i].time
+                stall_duration += float(stall_end_time - stall_start_time)
+
+    return stall_duration
